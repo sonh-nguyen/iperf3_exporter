@@ -136,6 +136,7 @@ type Config struct {
 	UDPMode     bool
 	Bitrate     string
 	Bind        string
+	Streams     int
 	Logger      *slog.Logger
 }
 
@@ -148,6 +149,16 @@ func ValidateBitrate(bitrate string) bool {
 	}
 
 	return bitratePattern.MatchString(bitrate)
+}
+
+// MaxStreams is the largest parallel stream count (-P) accepted from a probe
+// request. It is a sanity guard against pathological input, not a protocol
+// limit imposed by iperf3 itself.
+const MaxStreams = 64
+
+// ValidateStreams validates the parallel stream count is within range.
+func ValidateStreams(streams int) bool {
+	return streams >= 1 && streams <= MaxStreams
 }
 
 // Run executes an iperf3 test with the given configuration and returns the parsed results.
@@ -183,6 +194,10 @@ func (r *DefaultRunner) Run(ctx context.Context, cfg Config) Result {
 
 	if cfg.Bind != "" {
 		iperfArgs = append(iperfArgs, "-B", cfg.Bind)
+	}
+
+	if cfg.Streams > 1 {
+		iperfArgs = append(iperfArgs, "-P", strconv.Itoa(cfg.Streams))
 	}
 
 	if cfg.ReverseMode {
@@ -281,19 +296,37 @@ func (r *DefaultRunner) Run(ctx context.Context, cfg Config) Result {
 		result.ReceivedBitsPerSecond = raw.End.SumReceived.BitsPerSecond
 		result.Retransmits = raw.End.SumSent.Retransmits
 	} else if cfg.UDPMode {
-		// UDP Mode - use UDP-specific JSON fields from streams[0].udp and sum
-		// Add boundary check before accessing Streams[0]
+		// UDP Mode - use UDP-specific JSON fields from streams[].udp and sum
+		// With -P > 1, iperf3 reports one entry per parallel stream under
+		// streams[]; these must be aggregated (not just streams[0]) to get
+		// the correct totals across all streams.
 		if len(raw.End.Streams) > 0 {
-			// Common metrics using sender (streams[0].udp) data
-			result.SentSeconds = raw.End.Streams[0].UDP.Seconds
-			result.SentBytes = raw.End.Streams[0].UDP.Bytes
-			result.SentBitsPerSecond = raw.End.Streams[0].UDP.BitsPerSecond
+			var totalBytes, totalPackets, totalLostPackets, totalJitter float64
 
-			// UDP-specific metrics from streams[0].udp
-			result.SentPackets = raw.End.Streams[0].UDP.Packets
-			result.SentJitter = raw.End.Streams[0].UDP.JitterMs
-			result.SentLostPackets = raw.End.Streams[0].UDP.LostPackets
-			result.SentLostPercent = raw.End.Streams[0].UDP.LostPercent
+			for _, s := range raw.End.Streams {
+				totalBytes += s.UDP.Bytes
+				totalPackets += s.UDP.Packets
+				totalLostPackets += s.UDP.LostPackets
+				totalJitter += s.UDP.JitterMs
+			}
+
+			seconds := raw.End.Streams[0].UDP.Seconds
+			streamCount := float64(len(raw.End.Streams))
+
+			result.SentSeconds = seconds
+			result.SentBytes = totalBytes
+
+			if seconds > 0 {
+				result.SentBitsPerSecond = totalBytes * 8 / seconds
+			}
+
+			result.SentPackets = totalPackets
+			result.SentJitter = totalJitter / streamCount
+			result.SentLostPackets = totalLostPackets
+
+			if total := totalPackets + totalLostPackets; total > 0 {
+				result.SentLostPercent = totalLostPackets / total * 100
+			}
 		} else {
 			cfg.Logger.Warn("UDP mode: no streams found in iperf3 result")
 		}

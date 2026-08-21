@@ -55,6 +55,7 @@ type ProbeConfig struct {
 	UDPMode     bool
 	Bitrate     string
 	Bind        string
+	Streams     int
 }
 
 // Collector implements the prometheus.Collector interface for iperf3 metrics.
@@ -68,6 +69,7 @@ type Collector struct {
 	udpMode bool
 	bitrate string
 	bind    string
+	streams int
 	logger  *slog.Logger
 	runner  iperf.Runner
 
@@ -77,6 +79,7 @@ type Collector struct {
 	sentBytes       *prometheus.Desc
 	receivedSeconds *prometheus.Desc
 	receivedBytes   *prometheus.Desc
+	streamsDesc     *prometheus.Desc
 	// TCP-specific metrics
 	retransmits *prometheus.Desc
 	// UDP-specific metrics
@@ -109,6 +112,7 @@ func NewCollectorWithRunner(config ProbeConfig, logger *slog.Logger, runner iper
 		udpMode: config.UDPMode,
 		bitrate: config.Bitrate,
 		bind:    config.Bind,
+		streams: config.Streams,
 		logger:  logger,
 		runner:  runner,
 
@@ -116,6 +120,11 @@ func NewCollectorWithRunner(config ProbeConfig, logger *slog.Logger, runner iper
 		up: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "", "up"),
 			"Was the last iperf3 probe successful (1 for success, 0 for failure).",
+			labels, nil,
+		),
+		streamsDesc: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "", "streams"),
+			"Number of parallel streams (-P) the last iperf3 probe was configured with.",
 			labels, nil,
 		),
 		sentSeconds: prometheus.NewDesc(
@@ -195,6 +204,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.sentBytes
 	ch <- c.receivedSeconds
 	ch <- c.receivedBytes
+	ch <- c.streamsDesc
 
 	// TCP-specific metrics
 	ch <- c.retransmits
@@ -229,11 +239,19 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		UDPMode:     c.udpMode,
 		Bitrate:     c.bitrate,
 		Bind:        c.bind,
+		Streams:     c.streams,
 		Logger:      c.logger,
 	})
 
 	// Common label values for all metrics
 	labelValues := []string{c.target, strconv.Itoa(c.port)}
+
+	// Effective stream count: iperf3 always runs at least 1 stream, even
+	// when Streams is unset (0) or explicitly 1.
+	effectiveStreams := c.streams
+	if effectiveStreams < 1 {
+		effectiveStreams = 1
+	}
 
 	// Set metrics based on result
 	if result.Success {
@@ -242,6 +260,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.sentBytes, prometheus.GaugeValue, result.SentBytes, labelValues...)
 		ch <- prometheus.MustNewConstMetric(c.receivedSeconds, prometheus.GaugeValue, result.ReceivedSeconds, labelValues...)
 		ch <- prometheus.MustNewConstMetric(c.receivedBytes, prometheus.GaugeValue, result.ReceivedBytes, labelValues...)
+		ch <- prometheus.MustNewConstMetric(c.streamsDesc, prometheus.GaugeValue, float64(effectiveStreams), labelValues...)
 
 		// Retransmits is only relevant in TCP mode
 		if !result.UDPMode {
@@ -266,6 +285,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.sentBytes, prometheus.GaugeValue, 0, labelValues...)
 		ch <- prometheus.MustNewConstMetric(c.receivedSeconds, prometheus.GaugeValue, 0, labelValues...)
 		ch <- prometheus.MustNewConstMetric(c.receivedBytes, prometheus.GaugeValue, 0, labelValues...)
+		ch <- prometheus.MustNewConstMetric(c.streamsDesc, prometheus.GaugeValue, float64(effectiveStreams), labelValues...)
 
 		// Only include mode-specific metrics for the active mode
 		if !result.UDPMode {

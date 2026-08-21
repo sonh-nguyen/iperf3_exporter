@@ -143,6 +143,7 @@ When making requests to the `/probe` endpoint, the following parameters can be u
 | `bitrate` | Target bitrate in bits/sec (format: #[KMG][/#]). For UDP mode, iperf3 defaults to 1 Mbit/sec if not specified. | - |
 | `period` | Duration of the iperf3 test | 5s |
 | `bind` | Bind to a specific local IP address or interface | - |
+| `streams` | Number of parallel streams (iperf3 `-P`), 1-64 | 1 |
 
 ### Checking the Results
 
@@ -189,6 +190,7 @@ The exporter provides the following metrics:
 | Metric | Description | Labels |
 |--------|-------------|--------|
 | `iperf3_up` | Was the last iperf3 probe successful (1 for success, 0 for failure) | `target`, `port` |
+| `iperf3_streams` | Number of parallel streams (`-P`) the last probe was configured with | `target`, `port` |
 | `iperf3_sent_seconds` | Total seconds spent sending packets | `target`, `port` |
 | `iperf3_sent_bytes` | Total sent bytes for the last test run | `target`, `port` |
 | `iperf3_received_seconds` | Total seconds spent receiving packets | `target`, `port` |

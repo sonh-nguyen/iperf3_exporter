@@ -117,6 +117,22 @@ func TestProbeEndpoint(t *testing.T) {
 
 		bind := r.URL.Query().Get("bind")
 
+		streams := 1
+		streamsParam := r.URL.Query().Get("streams")
+		if streamsParam != "" {
+			var err error
+			streams, err = strconv.Atoi(streamsParam)
+			if err != nil {
+				http.Error(w, "'streams' parameter must be an integer", http.StatusBadRequest)
+				return
+			}
+		}
+
+		if !iperf.ValidateStreams(streams) {
+			http.Error(w, "'streams' parameter must be between 1 and 64", http.StatusBadRequest)
+			return
+		}
+
 		// Create a collector with the mock runner
 		registry := prometheus.NewRegistry()
 		probeConfig := collector.ProbeConfig{
@@ -127,6 +143,7 @@ func TestProbeEndpoint(t *testing.T) {
 			ReverseMode: reverseMode,
 			Bitrate:     bitrate,
 			Bind:        bind,
+			Streams:     streams,
 		}
 		c := collector.NewCollectorWithRunner(probeConfig, slog.Default(), mockRunner)
 		registry.MustRegister(c)
@@ -317,7 +334,48 @@ func TestProbeEndpoint(t *testing.T) {
 		}
 	})
 
-	// Test case 7: Failed iperf3 test
+	// Test case 7: Streams parameter
+	t.Run("Streams", func(t *testing.T) {
+		// Make a request with a custom stream count
+		resp, err := http.Get(ts.URL + "?target=test.example.com&streams=4")
+		if err != nil {
+			t.Fatalf("Failed to make request: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		// Check response status
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("Expected status OK, got %v", resp.Status)
+		}
+
+		// Parse and verify metrics
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("Failed to read response body: %v", err)
+		}
+
+		expectedPattern := regexp.MustCompile(`iperf3_up\{port="5201".*target="test.example.com"\} 1`)
+		if !expectedPattern.MatchString(string(body)) {
+			t.Errorf("Expected metric matching pattern %q not found in response", expectedPattern.String())
+		}
+	})
+
+	// Test case 8: Invalid streams parameter
+	t.Run("InvalidStreams", func(t *testing.T) {
+		// Make a request with an out-of-range stream count
+		resp, err := http.Get(ts.URL + "?target=test.example.com&streams=999")
+		if err != nil {
+			t.Fatalf("Failed to make request: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		// Check response status
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("Expected status Bad Request, got %v", resp.Status)
+		}
+	})
+
+	// Test case 9: Failed iperf3 test
 	t.Run("FailedTest", func(t *testing.T) {
 		// Create a mock runner that returns a failure
 		failedRunner := &MockRunner{

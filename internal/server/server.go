@@ -203,6 +203,28 @@ func (s *Server) probeHandler(w http.ResponseWriter, r *http.Request) {
 
 	bind := r.URL.Query().Get("bind")
 
+	streams := 1
+
+	streamsParam := r.URL.Query().Get("streams")
+	if streamsParam != "" {
+		var err error
+
+		streams, err = strconv.Atoi(streamsParam)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("'streams' parameter must be an integer: %s", err), http.StatusBadRequest)
+			collector.IperfErrors.Inc()
+
+			return
+		}
+	}
+
+	if !iperf.ValidateStreams(streams) {
+		http.Error(w, fmt.Sprintf("'streams' parameter must be between 1 and %d", iperf.MaxStreams), http.StatusBadRequest)
+		collector.IperfErrors.Inc()
+
+		return
+	}
+
 	// Determine the effective timeout for the iperf3 test.
 	// The timeout logic follows these rules:
 	// 1. Start with the Prometheus scrape timeout from the X-Prometheus-Scrape-Timeout-Seconds header
@@ -263,6 +285,7 @@ func (s *Server) probeHandler(w http.ResponseWriter, r *http.Request) {
 		UDPMode:     udpMode,
 		Bitrate:     bitrate,
 		Bind:        bind,
+		Streams:     streams,
 	}
 
 	c := collector.NewCollector(probeConfig, s.logger)
