@@ -1,0 +1,16 @@
+# Multi-stage build from source, for local development use by iperf3-monitor's
+# docker-compose (which needs a self-contained `docker-compose up --build`).
+# The release pipeline (.goreleaser.yaml) builds the binary itself and uses the
+# plain `Dockerfile` in this directory — do not use this file for releases.
+FROM golang:1.24-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/iperf3_exporter ./cmd/iperf3_exporter
+
+FROM alpine:3.21
+RUN apk add --no-cache iperf3
+COPY --from=build /out/iperf3_exporter /iperf3_exporter
+USER nobody:nobody
+ENTRYPOINT ["/iperf3_exporter"]
