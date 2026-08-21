@@ -47,6 +47,7 @@ type Server struct {
 	config *config.Config
 	logger *slog.Logger
 	server *http.Server
+	locks  *targetLocks
 }
 
 // New creates a new Server.
@@ -54,6 +55,7 @@ func New(cfg *config.Config) *Server {
 	return &Server{
 		config: cfg,
 		logger: cfg.Logger,
+		locks:  newTargetLocks(),
 	}
 }
 
@@ -271,6 +273,21 @@ func (s *Server) probeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	runTimeout := time.Duration(timeoutSeconds * float64(time.Second))
+
+	// Only one iperf3 test can run against a given target:port at a time
+	// (iperf3's server rejects a second concurrent client outright), so
+	// queue behind any in-flight test against the same target instead of
+	// racing it. If the caller (Prometheus) gives up first, r.Context() is
+	// canceled and this returns rather than waiting forever.
+	lockKey := fmt.Sprintf("%s:%d", target, targetPort)
+
+	if err := s.locks.Acquire(r.Context(), lockKey); err != nil {
+		http.Error(w, fmt.Sprintf("timed out waiting for another iperf3 test against %s to finish: %s", lockKey, err), http.StatusServiceUnavailable)
+		collector.IperfErrors.Inc()
+
+		return
+	}
+	defer s.locks.Release(lockKey)
 
 	start := time.Now()
 	registry := prometheus.NewRegistry()
